@@ -17,8 +17,7 @@
 
 #define FFTLEN 4096                     /// Number of samples to perform FFT on. Must be power of 2.
 
-typedef uint16_t sample;                /// Datatype of samples. Also used to store frequency coefficients.
-typedef std::complex<double> cmplx;     /// Complex number datatype for fft
+typedef uint16_t sample;                /// Datatype of samples.
 
 // FFT object
 /* Create FFT object */
@@ -41,7 +40,7 @@ ArduinoFFT<float> FFT = ArduinoFFT<float>(spectrum, phase, FFTLEN, RATE);
 // Musical literals
 #define CHORD_NAME_SIZE 15
 #define CHORD_MAX_NOTES 5
-#define NUM_CHORD_TYPES 13
+#define NUM_CHORD_TYPES 11      // needs to be 11?? or odd?? (probable bug)
 
 #define BUTTON          2
 
@@ -598,14 +597,12 @@ NUM_CHORD_TYPES should reflect how many chords are in the array below.
 All chords must be defined in root position.
 **/
 static chord A_root_chords[] = {
-
-    {4, {1, 5, 8, 7}, "A +13"},
-    {4, {1, 5, 8, 5}, "A +11"},
+    
     {4, {1, 5, 8, 3}, "A +9"},
-    {4, {1, 5, 8, 12}, "A M7"},
-    {4, {1, 4, 8, 11}, "A m7"},
     {4, {1, 5, 8, 11}, "A Mm7"},
     {4, {1, 4, 8, 12}, "A mM7"},
+    {4, {1, 5, 8, 12}, "A M7"},
+    {4, {1, 4, 8, 11}, "A m7"},
     {3, {1, 4, 7}, "A dim"},
     {3, {1, 6, 8}, "A sus4"},
     {3, {1, 3, 8}, "A sus2"},
@@ -780,7 +777,7 @@ void AutoTuner(float* spectrum, int consoleWidth, int span_semitones)
 
     int window_width = consoleWidth;
 
-    int num_spikes = 3;                                             /// Number of fft spikes to consider for pitch deduction
+    int num_spikes = 5;                                             /// Number of fft spikes to consider for pitch deduction
     static int SpikeLocs[6];                                        /// Array to store indices in spectrum[] of fft spikes
     static float SpikeFreqs[6];                                     /// Array to store frequencies corresponding to spikes
     static char notenames[NUM_COLUMNS];
@@ -790,7 +787,7 @@ void AutoTuner(float* spectrum, int consoleWidth, int span_semitones)
     for(int i=0; i<num_spikes; i++)                                 /// Find spike frequencies (assumed to be harmonics)
         SpikeFreqs[i] = index2freq(SpikeLocs[i]);
 
-    float pitch = approx_hcf(SpikeFreqs, num_spikes, 5, 5);         /// Find pitch as approximate HCF of spike frequencies
+    float pitch = approx_hcf(SpikeFreqs, num_spikes, 5, 4);         /// Find pitch as approximate HCF of spike frequencies
 
     if(pitch)                                                       /// If pitch found, update notenames and print
     {
@@ -931,8 +928,11 @@ void ChordGuesser(float* spectrum, int max_notes)
     double peakiness = fft_std_dev/fft_mean;
 
     /// Display pitches, only if spectrum was peaky (if peaky, chord has probably been played)
-    if(peakiness>17)
+    if(peakiness>3)
+    {
         printText(0, MAX_DEVICES-1, displaystring);
+        delay(300);
+    }
 }
 
 int Oscilloscope(sample* audiodata, float* spectrum, int consoleWidth, int consoleHeight)
@@ -1032,28 +1032,50 @@ int mode = 0;
 
 void loop()
 {
-  if (!digitalRead(BUTTON))
+  if (!digitalRead(BUTTON))   // If button pressed
+  {
+    /// Toggle mode
     mode = (mode+1)%5;
 
+    /// Flash some lights
+    for (int i=1; i<=NUM_COLUMNS; i++)
+    {
+      mx.setColumn(i, 0b00000000);
+      delay(3);
+    }
+    for (int i=1; i<=NUM_COLUMNS; i++)
+    {
+      mx.setColumn(i, 0b11111111);
+      delay(3);
+    }
+    for (int i=1; i<=NUM_COLUMNS; i++)
+    {
+      mx.setColumn(i, 0b00000000);
+      delay(3);
+    }
+  }
+
+  /// Read audio data into workingaudio[]
   MainAudioQueue.peekFreshData(workingaudio, FFTLEN);
-  
+  /// Copy audio to spectrum and intialize phase array
   for (int i=0; i<FFTLEN; i++)
   {
     spectrum[i] = workingaudio[i];
     phase[i] = 0;
   }
-  
+  /// FFT
   FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);	/* Weigh data */
   FFT.compute(FFTDirection::Forward); /* Compute FFT */
   FFT.complexToMagnitude(); /* Compute magnitudes */
 
+  /// Do mode thing
   switch (mode)
   {
-    case 0: AutoTuner(spectrum, 9, 1); delay(100); break;
-    case 1: ChordGuesser(spectrum, 3); delay(300); break;       /// Guess 3-note chords
-    case 2: SpectralTuner(spectrum, 32, 8); break;
-    case 3: Oscilloscope(workingaudio, spectrum, 32,8); break;
-    case 4: ChordGuesser(spectrum, 5); delay(300); break;       /// Guess 5-note i.e. all chords
+    case 0: SpectralTuner(spectrum, 32, 8); break;
+    case 1: ChordGuesser(spectrum, 3); break;       /// Guess 3-note chords
+    case 2: Oscilloscope(workingaudio, spectrum, 32,8); break;
+    case 3: AutoTuner(spectrum, 9, 1); break;
+    case 4: ChordGuesser(spectrum, 5); break;       /// Guess 5-note i.e. all chords
   }
 
 }
