@@ -318,8 +318,8 @@ float approx_hcf(float inputs[], int num_inputs, int max_iter, int accuracy_thre
     {
         float newinputs[2];
         newinputs[0] = inputs[0];
-        newinputs[1] = approx_hcf(inputs+1, num_inputs-1, max_iter-1, accuracy_threshold);
-        float ans = approx_hcf(newinputs, 2, max_iter-1, accuracy_threshold);
+        newinputs[1] = approx_hcf(inputs+1, num_inputs-1, max_iter, accuracy_threshold);
+        float ans = approx_hcf(newinputs, 2, max_iter, accuracy_threshold);
         return ans;
     }
 
@@ -725,9 +725,9 @@ void SpectralTuner(float* spectrum, int consoleWidth, int consoleHeight, bool ad
         float nextindex = octave1index[i+1];                                    /// "Fractional index" corresponding to (i+1)th frequency.
         /// OCTAVE WRAPPING
         /// To the frequency coefficient for any frequency F will be added:
-        /// The frequency coefficients of all frequencies F*2^n for n=1..8
-        /// (i.e., 8 octaves of the same-letter pitch)
-        for(int j=0; j<4; j++)                                                  /// Iterating through 8 octaves
+        /// The frequency coefficients of all frequencies F*2^n for n=1..4
+        /// (i.e., 4 octaves of the same-letter pitch)
+        for(int j=0; j<4; j++)                                                  /// Iterating through 4 octaves
         {
             /// Add everything in spectrum[] between current index and next index to current histogram bar.
             for(int k=round(index); k<round(nextindex); k++)                    /// Fractional indices must be rounded for use
@@ -777,9 +777,9 @@ void AutoTuner(float* spectrum, int consoleWidth, int span_semitones)
 
     int window_width = consoleWidth;
 
-    int num_spikes = 5;                                             /// Number of fft spikes to consider for pitch deduction
-    static int SpikeLocs[6];                                        /// Array to store indices in spectrum[] of fft spikes
-    static float SpikeFreqs[6];                                     /// Array to store frequencies corresponding to spikes
+    int num_spikes = 5;                                            /// Number of fft spikes to consider for pitch deduction
+    static int SpikeLocs[6];                                       /// Array to store indices in spectrum[] of fft spikes
+    static float SpikeFreqs[6];                                    /// Array to store frequencies corresponding to spikes
     static char notenames[NUM_COLUMNS];
 
     Find_n_Largest(SpikeLocs, spectrum, num_spikes, FFTLEN/2, 40, 0.1);        /// Find spikes
@@ -787,7 +787,7 @@ void AutoTuner(float* spectrum, int consoleWidth, int span_semitones)
     for(int i=0; i<num_spikes; i++)                                 /// Find spike frequencies (assumed to be harmonics)
         SpikeFreqs[i] = index2freq(SpikeLocs[i]);
 
-    float pitch = approx_hcf(SpikeFreqs, num_spikes, 5, 4);         /// Find pitch as approximate HCF of spike frequencies
+    float pitch = approx_hcf(SpikeFreqs, num_spikes, 5, 5);         /// Find pitch as approximate HCF of spike frequencies
 
     if(pitch)                                                       /// If pitch found, update notenames and print
     {
@@ -811,127 +811,97 @@ void AutoTuner(float* spectrum, int consoleWidth, int span_semitones)
     }
 }
 
-void ChordGuesser(float* spectrum, int max_notes)
+void ChordGuesser(float* spectrum, int max_notes, float sensitivity = 0.5)
 {
     if(!chord_dictionary_initialized)
         initialize_chord_dictionary();
 
-    const float quartertone = pow(2.0, 1.0/24.0);                       /// Interval of quarter-tone (used to check pitch distinctness)
+    static float notecontent[12];                                                /// notecontent[0] will store detected intensity of A, notecomtent[2] of A# etc.
+    static float octave1index[13];                                               /// Will hold "fractional indices" in spectrum[] that map to each bar
 
-    const int num_spikes = 10;                                          /// Number of fft spikes to consider
-    static int SpikeLocs[11];                                          /// Array to store indices in spectrum[] of fft spikes
-    static float SpikeFreqs[11];                                       /// Array to store frequencies corresponding to spikes
+    /// SETTING FIRST-OCTAVE INDICES
+    /// Each index increment corresponds to an interval of 2^(1/12).
+    /// The first frequency is  A1, 110Hz.
+    /// So the ith frequency is 110Hz*2^(i/12)
+    for(int i=0; i<13; i++)
+        octave1index[i] = freq2index(110.0*pow(2,(float)(2*i-1)/24));             /// "Fractional index" in spectrum[] corresponding to ith frequency.
 
-    float noteFreqs[10];                                                /// Array to store distinct peak frequencies
-    int notes_found;                                                    /// Number of distinct peaks found
+    for(int i=0; i<12; i++)
+        notecontent[i]=0;
 
-    notes_found = 0;                                                    /// Number of distinct pitches (spikes) found
-
-    Find_n_Largest(SpikeLocs, spectrum,                                 /// Find spikes. Somehow works worse with clump rejection,
-                   num_spikes, FFTLEN/2, 40, 0.1);                         /// so using separate pitch distinctness check.
-
-    for(int i=0; i<num_spikes; i++)                                     /// Find spike frequencies
-        SpikeFreqs[i] = index2freq(SpikeLocs[i]);
-
-    noteFreqs[notes_found++] = SpikeFreqs[0];
-
-    /// Find distinct spike frequencies and store in noteFreqs[].
-    /// SpikeFreqs[] is in decreasing order of spike intensity, so the tallest spikes will be added first.
-    for(int i=1; i<num_spikes; i++)                                     /// For each frequency spike
+    /// Finding intensity of each note in input
+    /// Iterating through log-scaled output indices and mapping them to linear input indices
+    /// (instead of the other way round).
+    /// So, an exponential mapping.
+    for(int i=0; i<12; i++)
     {
-        /// First check if spike is distinct
-        bool distinct = true;                                           /// Assume distinct by default
-        for(int j=0; j<notes_found; j++)                                /// Look at each distinct note already found,
+        float index = octave1index[i];                                          /// "Fractional index" in spectrum[] corresponding to ith frequency.
+        float nextindex = octave1index[i+1];                                    /// "Fractional index" corresponding to (i+1)th frequency.
+        /// OCTAVE WRAPPING
+        /// To the frequency coefficient for any frequency F will be added:
+        /// The frequency coefficients of all frequencies F*2^n for n=1..4
+        /// (i.e., 4 octaves of the same-letter pitch)
+        for(int j=0; j<4; j++)                                                  /// Iterating through 4 octaves
         {
-            float separation = (SpikeFreqs[i]>noteFreqs[j] ?            /// calculate the separation ratio (interval),
-                                SpikeFreqs[i]/noteFreqs[j] : noteFreqs[j]/SpikeFreqs[i]);
-            if(separation<quartertone)                                  /// and check that it is greater at least than a quarter tone
-            {
-                distinct = false;                                       /// If separation less than a quarter tone, spike is non-distinct
-                break;
-            }
+            /// Add everything in spectrum[] between current index and next index to current histogram bar.
+            for(int k=round(index); k<round(nextindex); k++)                    /// Fractional indices must be rounded for use
+                /// There are (nextindex-index) additions for a particular bar, so divide each addition by this.
+                notecontent[i]+=spectrum[k]/(4*(nextindex-index));
+
+            /// Frequency doubles with octave increment, so index in linearly spaced data also doubles.
+            index*=2;
+            nextindex*=2;
         }
-
-        /// Stop adding to noteFreqs if max_notes notes already found
-        if(notes_found>=max_notes)
-            break;
-
-        /// If note is distinct, add it to noteFreqs.
-        if(distinct)
-            noteFreqs[notes_found++] = SpikeFreqs[i];
     }
 
-    /// Sort notes found in increasing order of frequency, so "chord root" appears first.
-    for(int i=0; i<notes_found; i++)
-        for(int j=0; j<notes_found-1; j++)
-            if(noteFreqs[j] > noteFreqs[j+1])
+
+    /// chord_tones holds pitch numbers that will be sorted in decreasing order of detected intensity    
+    int chord_tones[12] = {1,2,3,4,5,6,7,8,9,10,11,12};
+    /// Now populating chord_tones by sorting found notes in order of intensity
+    /// Eventually we will include a chord guessing preference for loud root notes. Low = loud, often, since octave harmonics add
+    for (int i=0; i<12; i++)
+        for (int j=0; j<12; j++)
+            if (notecontent[chord_tones[i]-1] > notecontent[chord_tones[j]-1])
             {
-                float tmp = noteFreqs[j];
-                noteFreqs[j] = noteFreqs[j+1];
-                noteFreqs[j+1] = tmp;
+              int tmp = chord_tones[i];
+              chord_tones[i] = chord_tones[j];
+              chord_tones[j] = tmp;
             }
-
-    /// Now calculating pitch numbers (1 = A, 2 = A#, 3 = B etc.) of notes in 'chord'
-    int chord_tones[10];
-    int unique_chord_tones[10];
-    float centsSharp;
-    for(int i=0; i<notes_found; i++)
-        chord_tones[i] = pitchNumber(noteFreqs[i], &centsSharp);
-
-    /// And finding list of unique chord tones (deleting octave-up/down repetitions of notes)
-    int num_unique_chord_tones = 0;
-    for(int i=0; i<notes_found; i++)
+    
+    /// The number of notes in the chord played is probably smaller than the max notes allowable.
+    /// Now iterating backward (ascending intensity) through chord_tones to find the transition point from below-average intensity to above-average intensity
+    /// All entries in chord_tones to the left of the sudden jump are part of the chord played.
+    int notes_found = max_notes;
+    float mean = 0;
+    float max = 0;
+    for (int i=0; i<12; i++)
     {
-        bool uniq = true;
-        for(int j=0; j<num_unique_chord_tones; j++)
-            if(chord_tones[i] == unique_chord_tones[j])
-                uniq = false;
-
-        if(uniq)
-            unique_chord_tones[num_unique_chord_tones++] = chord_tones[i];
+        mean += notecontent[chord_tones[i]-1]/12.0;
+        if (notecontent[chord_tones[i]-1] > max)
+          max = notecontent[chord_tones[i]-1];
+    }
+    float thresh =  max - sensitivity*(max-mean);
+    while ( notecontent[chord_tones[notes_found]-1] < thresh )
+    {
+      notes_found--;
+      if (notes_found<=0)
+      {
+        notes_found = max_notes;          /// But if no jump is found all notes are important
+        break;
+      }
     }
 
     /// Now preparing display string
     char displaystring[100];
     int chnum = 0;
-    /// Add chord name
-    chnum += what_chord_is(displaystring, unique_chord_tones, num_unique_chord_tones);
-    /// Pad with spaces
-    while(chnum<CHORD_NAME_SIZE+1) displaystring[chnum++] = ' ';
-    /// Add note names
-    displaystring[chnum++] = '(';
-    for(int i=0; i<notes_found; i++)
+    /// Show chord name if found
+    int NameLength = what_chord_is(displaystring, chord_tones, notes_found);      /// if chord found write chord name to displaystring
+    if (NameLength)         /// If chord found
     {
-        chnum += pitchName(displaystring+chnum, chord_tones[i]);
-        displaystring[chnum++] = ' ';
-    }
-    displaystring[chnum++] = ')';
-    /// Null-terminate
-    displaystring[chnum++] = '\0';
-
-    /// Ad-hoc measure of peakiness of spectrum: peakiness = max/mean
-    double fft_max = spectrum[0];
-    double fft_mean = (double)spectrum[0]/(double)FFTLEN;
-    double fft_std_dev = 0;
-    for(int i=1; i<FFTLEN; i++)
-    {
-        fft_mean += (double)spectrum[i]/(double)FFTLEN;
-        if(spectrum[i]>fft_max)
-            fft_max = spectrum[i];
-    }
-    for(int i=1; i<FFTLEN; i++)
-    {
-        double diff = (spectrum[i] - fft_mean);
-        fft_std_dev += diff*diff/(double)FFTLEN;
-    }
-    fft_std_dev = sqrt(fft_std_dev);
-    double peakiness = fft_std_dev/fft_mean;
-
-    /// Display pitches, only if spectrum was peaky (if peaky, chord has probably been played)
-    if(peakiness>3)
-    {
+        // null terminate
+        displaystring[NameLength] = '\0';
+        // print and pause
         printText(0, MAX_DEVICES-1, displaystring);
-        delay(300);
     }
 }
 
@@ -939,7 +909,7 @@ int Oscilloscope(sample* audiodata, float* spectrum, int consoleWidth, int conso
 {
   static uint8_t displaydata[NUM_COLUMNS];
 
-  int num_spikes = 2;                                             /// Number of fft spikes to consider for pitch deduction
+  int num_spikes = 5;                                             /// Number of fft spikes to consider for pitch deduction
   static int SpikeLocs[6];                                        /// Array to store indices in spectrum[] of fft spikes
   static float SpikeFreqs[6];                                     /// Array to store frequencies corresponding to spikes
   static char notenames[NUM_COLUMNS];
@@ -1015,6 +985,7 @@ void loop1()
 
 void setup()
 {
+  Serial.begin(9600);
   delay(1000);
 
   SPI1.begin();
@@ -1075,7 +1046,7 @@ void loop()
     case 1: ChordGuesser(spectrum, 3); break;       /// Guess 3-note chords
     case 2: Oscilloscope(workingaudio, spectrum, 32,8); break;
     case 3: AutoTuner(spectrum, 9, 1); break;
-    case 4: ChordGuesser(spectrum, 5); break;       /// Guess 5-note i.e. all chords
+    case 4: ChordGuesser(spectrum, 4, 0.8); break;       /// Guess 4-note i.e. all chords
   }
 
 }
