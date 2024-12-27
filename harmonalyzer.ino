@@ -1,3 +1,10 @@
+/*------------------------------------------------------------------
+--------Raspberri Pi Pico Music Visualizer, Harmony Analyzer--------
+--------------------------------------------------------------------
+    Analog mic -> Raspberri Pi Pico -> MAX7219 -> 8*32 LED Matrix
+                          |
+                  Mode toggle button
+*/
 
 #include <MD_MAX72xx.h>
 #include <SPI.h>
@@ -64,14 +71,11 @@ struct chord
 ----class AudioQueue----
 ------------------------
 Why audio queues are needed:
-Audio recording/playback happens "in the background", i.e. on a different thread:
-    - Whenever new audio data enters the sound card (from the microphone), the
-      sound card will call a callback function and pass this data to it.
-    - Whenever the sound card requires new data to send (to the speakers), it will
-      call a callback function and expect to be provided with as much data as it
-      requires.
-These things happen at unpredictable times since they are tied to audio sample rates
-etc. rather than the clock speed.
+Audio recording/playback happens "in the background", i.e. on a different thread.
+Intermittently, the sound card will transfer the data out of its working buffer to
+memory shared by the main thread.
+This happens at unpredictable times since it are tied to audio sample rates etc.
+rather than the clock speed.
 Reading and writing audio data from and to a queue helps prevent threading problems
 such as skipping/repeating samples or getting more or less data than expected.
 **/
@@ -169,11 +173,14 @@ void AudioQueue::peekFreshData(float* output, int n_samples,               /// P
     for(int i=0; i<n_samples; i++)
         output[n_samples-i-1] = audio[(len+inpos-i)%len]*volume;
 }
+
 // SPI hardware interface
-//MD_MAX72XX mx = MD_MAX72XX(HARDWARE_TYPE, CS_PIN, MAX_DEVICES);
-// Arbitrary pins
 MD_MAX72XX mx = MD_MAX72XX(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
-// Print function from MDMAX72xx.h library examples
+
+/*
+----printText()----
+Prints text, function from MDMAX72xx.h library examples
+*/
 void printText(uint8_t modStart, uint8_t modEnd, char *pMsg)
 // Print the text string to the LED matrix modules specified.
 // Message area is padded with blank columns after printing.
@@ -236,6 +243,13 @@ void printText(uint8_t modStart, uint8_t modEnd, char *pMsg)
   mx.control(modStart, modEnd, MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
 }
 
+/*
+----showgraph()----
+Plots as a graph a NUM_COLUMNS long array of integers each valued between 1 and 8.
+mode = 0 for a histogram
+mode = 1 for 3-bit binary output
+line graph otherwise
+*/
 void showgraph(uint8_t data[NUM_COLUMNS], int mode=0)
 {
   mx.clear();
@@ -279,25 +293,16 @@ void showgraph(uint8_t data[NUM_COLUMNS], int mode=0)
   }
 }
 
+/*
+Conversion between spectral index and frequency
+*/
 float index2freq(int index)
 {
     return 2*(float)index*(float)RATE/(float)FFTLEN;
 }
-
 float freq2index(float freq)
 {
     return 0.5*freq*(float)FFTLEN/(float)RATE;
-}
-
-/**
-----float mapLin2Log()----
-Maps linear axis to log axis.
-If graph A has a linearly scaled x-axis and graph B has a logarithmically scaled x-axis
-then this function gives the x-coordinate in B corresponding to some x-coordinate in A.
-**/
-float mapLin2Log(float LinMin, float LinRange, float LogMin, float LogRange, float LinVal)
-{
-    return LogMin+(log(LinVal+1-LinMin)/log(LinRange+LinMin))*LogRange;
 }
 
 /**
@@ -379,12 +384,12 @@ float approx_hcf(float inputs[], int num_inputs, int max_iter, int accuracy_thre
 }
 
 /**
-----Find_n_Largest()----
+----Find_n_Peaks()----
 Finds indices of n_out largest peaks in input array.
-
+Results in increasing order of frequency.
 Window should be chosen comparable to peak width, threshold like peak/noise.
 **/
-void Find_n_Largest(int* output, float* input, int n_out, int n_in, int window = 5, float threshold = 2)
+void Find_n_Peaks(int* output, float* input, int n_out, int n_in, int window = 5, float threshold = 2)
 {
     /// Array to store averaged spike heights
     float* outputvals = new float[n_out];
@@ -471,6 +476,25 @@ void Find_n_Largest(int* output, float* input, int n_out, int n_in, int window =
     delete[] outputvals;
 }
 
+/*
+----detect_pitch()----
+Detects pitch considering num_spikes spectral peaks
+*/
+float detect_pitch(float* spectrum, int num_spikes)
+{
+  num_spikes = num_spikes < 10 ? num_spikes : 10;
+  static int SpikeLocs[11];                                      /// Array to store indices in spectrum[] of fft spikes
+  static float SpikeFreqs[11];                                   /// Array to store frequencies corresponding to spikes
+
+  Find_n_Peaks(SpikeLocs, spectrum, num_spikes, FFTLEN/2, 40, 0.1);        /// Find spikes
+
+  for(int i=0; i<num_spikes; i++)                                 /// Find spike frequencies (assumed to be harmonics)
+      SpikeFreqs[i] = index2freq(SpikeLocs[i]);
+
+  float pitch = approx_hcf(SpikeFreqs, num_spikes, 5, 5);         /// Find pitch as approximate HCF of spike frequencies
+  return pitch;
+}
+
 /**
 ----int pitchNumber()----
 Given a frequency freq, this function finds and returns the closest pitch number,
@@ -531,12 +555,14 @@ int pitchName(char* name, int pitch_num)
     }
 }
 
-/**
+/*
 ----------------------------
 ------Chord Dictionary------
 ----------------------------
-**/
-/// Checks if a chord contains ALL the input notes
+
+----chord::contains()----
+Checks if a chord contains ALL the input notes
+*/
 bool chord::contains(int notes_in[], int num_notes_in)
 {
     for(int i=0; i<num_notes_in; i++)
@@ -554,7 +580,10 @@ bool chord::contains(int notes_in[], int num_notes_in)
     return true;
 }
 
-/// Transpose a chord up by a certain number of semitones (-ve semitones_up means transpose down)
+/*
+----transpose_chord()----
+Transposes a chord up by a certain number of semitones (-ve semitones_up means transpose down)
+*/
 chord transpose_chord(chord old_chord, int semitones_up)
 {
     /// If shift is zero return chord unchanged
@@ -616,10 +645,13 @@ static chord A_root_chords[] = {
 static chord all_chords[NUM_CHORD_TYPES*12];
 
 /// Initialization flag
-static bool chord_dictionary_initialized = false;
+bool chord_dictionary_initialized = false;
 
-/// Initialization function: Performs transpositions to populate all_chords from A_root_chords
-/// Create chord dictionary, i.e., populate all_chords[] with transposed up versions of A_root_chords
+/*
+----initialize_chord_dictionary()----
+Initialization function: Performs transpositions to populate all_chords from A_root_chords
+Creates "chord dictionary" in RAM.
+*/
 void initialize_chord_dictionary()
 {
     for(int i=0; i<NUM_CHORD_TYPES; i++)
@@ -628,10 +660,16 @@ void initialize_chord_dictionary()
     chord_dictionary_initialized = true;
 }
 
-/// Looks for an acceptably small chord that contains ALL provided input notes, and writes the name of the chord to name_out
-/// Given a set of notes (pitch numbers 1 = A, 2 = A#, 3 = B, etc.),
-/// this function finds a chord that contains all those notes
-/// and writes the chord's name to char* name_out
+/*
+----what_chord_is()----
+Looks for an acceptably small chord that contains ALL provided input
+notes, and writes the name of the chord to name_out.
+Given a set of notes (pitch numbers 1 = A, 2 = A#, 3 = B, etc.),
+this function finds a chord that contains all those notes and writes
+the chord's name to char* name_out
+Guesses prioritized based on fewest undetected (inferred) notes and
+matching the root (lowest) note
+*/
 int what_chord_is(char* name_out, int notes[], int num_notes)
 {
     int chord_index;                                                /// This will store the guess (its index in all_chords[])
@@ -691,11 +729,14 @@ int what_chord_is(char* name_out, int notes[], int num_notes)
 }
 
 /**
----------------------------
-----Visualizer Function----
----------------------------
+-------------------------
+----NotesVisualizer()----
+-------------------------
+Displays a spectral histogram wrapped horizontally at the octave with an optionally adaptive
+vertical scale
+Some function arguments untested, inherited from PC version of code.
 **/
-void SpectralTuner(float* spectrum, int consoleWidth, int consoleHeight, bool adaptive = true,
+void NotesVisualizer(float* spectrum, int consoleWidth, int consoleHeight, bool adaptive = true,
                    float graphScale = 1.0)
 {
     int numbars = consoleWidth;
@@ -761,8 +802,7 @@ void SpectralTuner(float* spectrum, int consoleWidth, int consoleHeight, bool ad
 ----Auto Tuner----
 ------------------
 startAutoTuner() is a more traditional guitar tuner. It performs internal pitch
-detection and displays a stationary "needle" and moving note-name "dial". Tuning
-can be performed by aligning the note name to the needle.
+detection and displays a moving note-name "dial".
 
 Pitch detection is performed by finding peaks in the fft and assuming that they
 are harmonics of an underlying fundamental. The approximate HCF of the frequencies
@@ -776,18 +816,9 @@ void AutoTuner(float* spectrum, int consoleWidth, int span_semitones)
 {
 
     int window_width = consoleWidth;
+    char notenames[NUM_COLUMNS];
 
-    int num_spikes = 5;                                            /// Number of fft spikes to consider for pitch deduction
-    static int SpikeLocs[6];                                       /// Array to store indices in spectrum[] of fft spikes
-    static float SpikeFreqs[6];                                    /// Array to store frequencies corresponding to spikes
-    static char notenames[NUM_COLUMNS];
-
-    Find_n_Largest(SpikeLocs, spectrum, num_spikes, FFTLEN/2, 40, 0.1);        /// Find spikes
-
-    for(int i=0; i<num_spikes; i++)                                 /// Find spike frequencies (assumed to be harmonics)
-        SpikeFreqs[i] = index2freq(SpikeLocs[i]);
-
-    float pitch = approx_hcf(SpikeFreqs, num_spikes, 5, 5);         /// Find pitch as approximate HCF of spike frequencies
+    float pitch = detect_pitch(spectrum, 5);                        /// Detect pitch from 5 largest peaks in FFT
 
     if(pitch)                                                       /// If pitch found, update notenames and print
     {
@@ -811,6 +842,15 @@ void AutoTuner(float* spectrum, int consoleWidth, int span_semitones)
     }
 }
 
+/*
+----------------------
+----ChordGuesser()----
+----------------------
+Finds total content of each pitch class in the provided spectrum and attempts
+to guess a chord with max_notes notes or fewer, by calling what_chord_is().
+Sentivity should be between 0 and 1. Zero means never guess anything and 1
+means always try to guess something even if you're wrong.
+*/
 void ChordGuesser(float* spectrum, int max_notes, float sensitivity = 0.5)
 {
     if(!chord_dictionary_initialized)
@@ -821,8 +861,8 @@ void ChordGuesser(float* spectrum, int max_notes, float sensitivity = 0.5)
 
     /// SETTING FIRST-OCTAVE INDICES
     /// Each index increment corresponds to an interval of 2^(1/12).
-    /// The first frequency is  A1, 110Hz.
-    /// So the ith frequency is 110Hz*2^(i/12)
+    /// The first frequency is a quarter tone below A1 i.e. below 110Hz.
+    /// So the ith frequency is 110Hz*2^((2*i-1)/24)
     for(int i=0; i<13; i++)
         octave1index[i] = freq2index(110.0*pow(2,(float)(2*i-1)/24));             /// "Fractional index" in spectrum[] corresponding to ith frequency.
 
@@ -905,21 +945,18 @@ void ChordGuesser(float* spectrum, int max_notes, float sensitivity = 0.5)
     }
 }
 
+/*
+----------------------
+----Oscilloscope()----
+----------------------
+This detects pitch from the provided spectrum, then plots a certain number of cycles of the
+provided audio data to the screen as a 3-bit oscilloscope with adaptive vertical scale.
+*/
 int Oscilloscope(sample* audiodata, float* spectrum, int consoleWidth, int consoleHeight)
 {
   static uint8_t displaydata[NUM_COLUMNS];
 
-  int num_spikes = 5;                                             /// Number of fft spikes to consider for pitch deduction
-  static int SpikeLocs[6];                                        /// Array to store indices in spectrum[] of fft spikes
-  static float SpikeFreqs[6];                                     /// Array to store frequencies corresponding to spikes
-  static char notenames[NUM_COLUMNS];
-
-  Find_n_Largest(SpikeLocs, spectrum, num_spikes, FFTLEN/2, 40, 0.1);        /// Find spikes
-
-  for(int i=0; i<num_spikes; i++)                                 /// Find spike frequencies (assumed to be harmonics)
-      SpikeFreqs[i] = index2freq(SpikeLocs[i]);
-
-  float pitch = approx_hcf(SpikeFreqs, num_spikes, 5, 5);         /// Find pitch as approximate HCF of spike frequencies
+  float pitch = detect_pitch(spectrum, 5);
 
   int period_nsamps = freq2index(pitch);
 
@@ -1042,11 +1079,11 @@ void loop()
   /// Do mode thing
   switch (mode)
   {
-    case 0: SpectralTuner(spectrum, 32, 8); break;
+    case 0: NotesVisualizer(spectrum, 32, 8); break;
     case 1: ChordGuesser(spectrum, 3); break;       /// Guess 3-note chords
     case 2: Oscilloscope(workingaudio, spectrum, 32,8); break;
     case 3: AutoTuner(spectrum, 9, 1); break;
-    case 4: ChordGuesser(spectrum, 4, 0.8); break;       /// Guess 4-note i.e. all chords
+    case 4: ChordGuesser(spectrum, 4); break;       /// Guess 4-note i.e. all chords
   }
 
 }
