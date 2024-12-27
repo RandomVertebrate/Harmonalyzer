@@ -22,7 +22,7 @@
 #define ADC_PIN           26
 #define ADC_CHANNEL       0
 
-#define FFTLEN 4096                     /// Number of samples to perform FFT on. Must be power of 2.
+#define FFTLEN 2048                     /// Number of samples to perform FFT on. Must be power of 2.
 
 typedef uint16_t sample;                /// Datatype of samples.
 
@@ -49,7 +49,9 @@ ArduinoFFT<float> FFT = ArduinoFFT<float>(spectrum, phase, FFTLEN, RATE);
 #define CHORD_MAX_NOTES 5
 #define NUM_CHORD_TYPES 11      // needs to be 11?? or odd?? (probable bug)
 
-#define BUTTON          2
+// UI info
+#define BUTTON          2       // Button on pin 2
+#define NUM_MODES       7
 
 /**
 Notes/pitches are represented by pitch numbers:
@@ -277,9 +279,31 @@ void showgraph(uint8_t data[NUM_COLUMNS], int mode=0)
         };
         break;
       }
-      case 1: // binary output
+      case 1: // show high values only (faux piano roll)
+      {    
+        switch (data[NUM_COLUMNS-col])
+        {
+          case 0: {current = 0B00000000; break;}
+          case 1: {current = 0B00000000; break;}
+          case 2: {current = 0B00000000; break;}
+          case 3: {current = 0B00000000; break;}
+          case 4: {current = 0B00000000; break;}
+          case 5: {current = 0B01110000; break;}
+          case 6: {current = 0B01110000; break;}
+          case 7: {current = 0B01110000; break;}
+          case 8: {current = 0B11111000; break;}
+          default: {current = 0B00000000;}
+        };
+        break;
+      }
+      case 2: // binary output
       {
         current = (byte)(data[NUM_COLUMNS-col]);
+        break;
+      }
+      case 3: // inverted binary output
+      {
+        current = (byte)(256-data[NUM_COLUMNS-col]);
         break;
       }
       default:  // line graph
@@ -736,14 +760,14 @@ Displays a spectral histogram wrapped horizontally at the octave with an optiona
 vertical scale
 Some function arguments untested, inherited from PC version of code.
 **/
-void NotesVisualizer(float* spectrum, int consoleWidth, int consoleHeight, bool adaptive = true,
-                   float graphScale = 1.0)
+void NotesVisualizer(float* spectrum, int consoleWidth, int consoleHeight, int displaymode, 
+                   bool adaptive = true, float graphScale = 1.0)
 {
     int numbars = consoleWidth;
 
     static int bargraph[NUM_COLUMNS];
     static uint8_t graph8bit[NUM_COLUMNS];
-    static float octave1index[NUM_COLUMNS];                                      /// Will hold "fractional indices" in spectrum[] that map to each bar
+    static float octave1index[NUM_COLUMNS+1];                                    /// Will hold "fractional indices" in spectrum[] that map to each bar
 
     /// SETTING FIRST-OCTAVE INDICES
     /// The entire x-axis of the histogram is to span one octave i.e. an interval of 2.
@@ -760,7 +784,7 @@ void NotesVisualizer(float* spectrum, int consoleWidth, int consoleHeight, bool 
     /// Iterating through log-scaled output indices and mapping them to linear input indices
     /// (instead of the other way round).
     /// So, an exponential mapping.
-    for(int i=0; i<numbars-1; i++)
+    for(int i=0; i<numbars; i++)
     {
         float index = octave1index[i];                                          /// "Fractional index" in spectrum[] corresponding to ith frequency.
         float nextindex = octave1index[i+1];                                    /// "Fractional index" corresponding to (i+1)th frequency.
@@ -794,7 +818,7 @@ void NotesVisualizer(float* spectrum, int consoleWidth, int consoleHeight, bool 
             graph8bit[i] = (consoleHeight*bargraph[i])*graphScale;
     }
 
-    showgraph(graph8bit,0);
+    showgraph(graph8bit,displaymode);
 }
 
 /**
@@ -811,7 +835,6 @@ therefore gives the pitch.
 span_semitones sets the span (and precision) of the dial display, i.e. how many
 pitch names are to be shown on screen at once.
 **/
-
 void AutoTuner(float* spectrum, int consoleWidth, int span_semitones)
 {
 
@@ -974,7 +997,7 @@ int Oscilloscope(sample* audiodata, float* spectrum, int consoleWidth, int conso
     displaydata[i] = 8 * (audiodata[i*2*period_nsamps/(consoleWidth*2)] - audiodata[minpos]) / (audiodata[maxpos] - audiodata[minpos]);
 
 
-  showgraph(displaydata, 3);
+  showgraph(displaydata, 5);
 
   return period_nsamps;
 }
@@ -1020,46 +1043,69 @@ void loop1()
   }
 }
 
+/// Function to flash message during mode switch
+void flash_message(char msg[])
+{
+  /// Flash lights
+  for (int i=1; i<=NUM_COLUMNS; i++)
+  {
+    mx.setColumn(i, 0b00000000); delay(1);
+  }
+  for (int i=1; i<=NUM_COLUMNS; i++)
+  {
+    mx.setColumn(i, 0b11111111); delay(1);
+  }
+  for (int i=1; i<=NUM_COLUMNS; i++)
+  {
+    mx.setColumn(i, 0b00000000); delay(1);
+  }
+  /// Print message
+  printText(0, MAX_DEVICES-1, msg); delay(100);
+  /// If message not empty wipe screen
+  if (msg[0]!='\0')
+    for (int i=1; i<=NUM_COLUMNS; i++)
+    {
+      mx.setColumn(i, 0b00000000); delay(10);
+    }
+}
+
+/*
+--------------------------
+-- CORE 1 (setup, loop) --
+--------------------------
+Core 1 does everything other than the audio recording, such as FFT, pitch and
+chord detection, and controlling the screen.
+*/
+
 void setup()
 {
   Serial.begin(9600);
-  delay(1000);
-
+  delay(1000);                    /// Let sound card (core 2) fill up the audio queue a bit
   SPI1.begin();
-  
   mx.begin();
-
-  
   initialize_chord_dictionary();
-  
   pinMode(BUTTON, INPUT_PULLUP);
 }
 
 sample workingaudio[FFTLEN];
 int mode = 0;
-
 void loop()
 {
   if (!digitalRead(BUTTON))   // If button pressed
   {
     /// Toggle mode
-    mode = (mode+1)%5;
+    mode = (mode+1)%NUM_MODES;
 
-    /// Flash some lights
-    for (int i=1; i<=NUM_COLUMNS; i++)
+    /// Flash appropriate message
+    switch (mode)
     {
-      mx.setColumn(i, 0b00000000);
-      delay(3);
-    }
-    for (int i=1; i<=NUM_COLUMNS; i++)
-    {
-      mx.setColumn(i, 0b11111111);
-      delay(3);
-    }
-    for (int i=1; i<=NUM_COLUMNS; i++)
-    {
-      mx.setColumn(i, 0b00000000);
-      delay(3);
+      case 0: flash_message("Pitch"); break;
+      case 1: flash_message("Piano"); break;
+      case 2: flash_message("Bass"); break;
+      case 3: flash_message("Triad"); break;
+      case 4: flash_message("Chord"); break;
+      case 5: flash_message("Osc"); break;
+      case 6: flash_message("Tuner"); break;
     }
   }
 
@@ -1079,11 +1125,13 @@ void loop()
   /// Do mode thing
   switch (mode)
   {
-    case 0: NotesVisualizer(spectrum, 32, 8); break;
-    case 1: ChordGuesser(spectrum, 3); break;       /// Guess 3-note chords
-    case 2: Oscilloscope(workingaudio, spectrum, 32,8); break;
-    case 3: AutoTuner(spectrum, 9, 1); break;
+    case 0: NotesVisualizer(spectrum, 32, 8, 0); break;
+    case 1: NotesVisualizer(spectrum, 32, 8, 1); break;
+    case 2: ChordGuesser(spectrum, 2); break;       /// Guess 2-note i.e. power chords
+    case 3: ChordGuesser(spectrum, 3); break;       /// Guess 3-note chords
     case 4: ChordGuesser(spectrum, 4); break;       /// Guess 4-note i.e. all chords
+    case 5: Oscilloscope(workingaudio, spectrum, 32,8); break;
+    case 6: AutoTuner(spectrum, 9, 1); break;
   }
 
 }
