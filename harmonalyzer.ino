@@ -1,9 +1,11 @@
 /*------------------------------------------------------------------
 --------Raspberri Pi Pico Music Visualizer, Harmony Analyzer--------
 --------------------------------------------------------------------
+
     Analog mic -> Raspberri Pi Pico -> MAX7219 -> 8*32 LED Matrix
                           |
                   Mode toggle button
+
 */
 
 #include <MD_MAX72xx.h>
@@ -283,15 +285,15 @@ void showgraph(uint8_t data[NUM_COLUMNS], int mode=0)
       {    
         switch (data[NUM_COLUMNS-col])
         {
-          case 0: {current = 0B00000000; break;}
-          case 1: {current = 0B00000000; break;}
-          case 2: {current = 0B00000000; break;}
-          case 3: {current = 0B00000000; break;}
-          case 4: {current = 0B00000000; break;}
-          case 5: {current = 0B01110000; break;}
-          case 6: {current = 0B01110000; break;}
-          case 7: {current = 0B01110000; break;}
-          case 8: {current = 0B11111000; break;}
+          case 0: {current = 0B00010000; break;}
+          case 1: {current = 0B00001000; break;}
+          case 2: {current = 0B00000100; break;}
+          case 3: {current = 0B00000010; break;}
+          case 4: {current = 0B00000001; break;}
+          case 5: {current = 0B11100000; break;}
+          case 6: {current = 0B11100000; break;}
+          case 7: {current = 0B11100000; break;}
+          case 8: {current = 0B11100000; break;}
           default: {current = 0B00000000;}
         };
         break;
